@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script>
+    (function () {
+      var t = localStorage.getItem("theme");
+      if (t) document.documentElement.dataset.theme = t;
+    })();
+  </script>
+</head>
+<body>
+<div class="app">
+
+  <aside id="side">
+    <div class="brand">
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c3 2.5 9 2.5 12 0v-5"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">{{ app_name }}</div>
+        <div class="muted small">Classes 8 to 10</div>
+      </div>
+    </div>
+
+    <button class="newbtn" id="newChat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      New chat
+    </button>
+
+    <div class="label">Class</div>
+    <div class="seg" id="classSeg"></div>
+
+    <div class="label">Subject</div>
+    <div class="subjects" id="subjectList"></div>
+
+    <div class="label">Recent chats</div>
+    <div class="history" id="history"></div>
+
+    <div class="side-foot">
+      <div class="user">
+        <div class="avatar">TM<span id="status" title="Checking..."></span></div>
+        <div class="user-txt">
+          <b>Tushar Madane</b>
+          <span class="muted small">Student</span>
+        </div>
+      </div>
+      <button class="icon" id="theme" title="Switch theme" aria-label="Switch theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <div id="scrim"></div>
+
+  <div class="main">
+    <div class="topbar">
+      <button class="icon" id="menu" aria-label="Open menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <span class="brand-name">{{ app_name }}</span>
+    </div>
+
+    <div class="head">
+      <b id="ctxTitle">All subjects</b>
+      <span class="muted" id="ctxSub">All classes</span>
+      <span class="tag">NCERT</span>
+    </div>
+
+    <div id="chat" class="scroll"></div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <textarea id="q" rows="1" placeholder="Ask anything from your textbook"></textarea>
+        <button class="sendbtn" id="send" aria-label="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </button>
+      </div>
+      <div class="disclaimer">Answers come from your indexed textbooks. Check important facts in the book.</div>
+    </div>
+  </div>
+
+</div>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

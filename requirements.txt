@@ -1,0 +1,11 @@
+flask>=3.0
+requests>=2.31
+pymupdf>=1.24
+qdrant-client>=1.9
+sentence-transformers>=3.0
+numpy>=1.26
+python-docx>=1.1
+tqdm>=4.66
+# Optional OCR for scanned pages (also install Tesseract + language packs: eng, hin, mar, san)
+pytesseract>=0.3.10
+pillow>=10.0

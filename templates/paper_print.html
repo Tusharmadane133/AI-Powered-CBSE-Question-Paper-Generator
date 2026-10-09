@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>{{ p.meta.title }} - Class {{ p.meta.class }} {{ p.meta.subject }}</title>
+<style>
+body{font-family:"Segoe UI","Mangal","Noto Sans Devanagari",sans-serif;max-width:800px;margin:20px auto;padding:0 20px;color:#000;line-height:1.5}
+h1,h2,h3{text-align:center;margin:4px 0}.meta{text-align:center;font-size:15px}
+hr{border:0;border-top:2px solid #000;margin:10px 0}.sec{font-weight:700;margin:18px 0 6px;font-size:16px}
+.q{margin:6px 0}.opt{margin-left:28px}.mk{font-style:italic;float:right}
+.ans{page-break-before:always}.toolbar{position:fixed;top:10px;right:10px;display:flex;gap:8px}
+button{padding:8px 14px;border:0;border-radius:8px;background:#c96442;color:#fff;cursor:pointer}
+@media print{.toolbar{display:none}}
+</style></head><body>
+<div class="toolbar"><button onclick="window.print()">Print / Save as PDF</button></div>
+{% if p.meta.school %}<h1>{{ p.meta.school }}</h1>{% endif %}
+<h2>{{ p.meta.title }}</h2>
+<div class="meta">Class: {{ p.meta.class }} &nbsp;&nbsp; Subject: {{ p.meta.subject }}</div>
+<div class="meta">Time: {{ p.meta.duration }} minutes &nbsp;&nbsp; Max. Marks: {{ p.meta.total_marks }}</div><hr>
+<b>General Instructions:</b>
+<ol><li>All questions are compulsory.</li><li>Marks are indicated against each section.</li><li>Write neat and legible answers.</li></ol>
+{% for s in p.sections %}
+<div class="sec">{{ s.name }} — {{ s.label }} ({{ s.marks_each }} mark(s) each, {{ s.marks_each * s.questions|length }} marks)</div>
+{% for q in s.questions %}
+<div class="q"><b>Q{{ q.no }}.</b> {{ q.question }} <span class="mk">[{{ s.marks_each }}]</span></div>
+{% for o in q.options or [] %}<div class="opt">({{ 'ABCD'[loop.index0] }}) {{ o }}</div>{% endfor %}
+{% endfor %}{% endfor %}
+{% if key %}<div class="ans"><h2>ANSWER KEY / MARKING SCHEME</h2>
+{% for s in p.sections %}<div class="sec">{{ s.name }} — {{ s.label }}</div>
+{% for q in s.questions %}<div class="q"><b>Q{{ q.no }}.</b> {{ q.answer }}</div>{% endfor %}{% endfor %}</div>{% endif %}
+</body></html>
