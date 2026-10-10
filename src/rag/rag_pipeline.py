@@ -194,6 +194,31 @@ def _lexical_relevance(question, chunk):
         return 0.0
     coverage = hits / len(terms)
     return 0.35 * coverage + 0.08 * min(hits, 3)
+_NO_INFO_PHRASES = (
+    "does not contain", "do not contain", "does not mention",
+    "no information", "not mentioned", "does not answer",
+    "not covered", "could not find",
+)
+
+
+def _has_topic_evidence(question, chunks):
+    """True when at least one chunk really contains a topic word of the question."""
+    terms = _query_terms(question)
+    if not terms:
+        return True
+    for chunk in chunks:
+        hay = str(chunk.get("text") or "").lower()
+        if any(t in hay for t in terms):
+            return True
+    return False
+
+
+def _summary_says_no_info(text):
+    """True when the LLM summary itself says the text has no information."""
+    head = (text or "").strip().lower()[:300]
+    return any(p in head for p in _NO_INFO_PHRASES)
+
+
 def _topic_query(question):
     """Build a compact exact-topic query for broad class/subject searches."""
     terms = _query_terms(question)
@@ -1066,6 +1091,11 @@ Do not include previous-question answers or unrelated options.
                     if answer:
                         yield "token", answer
                 return
+        # No summary of unrelated text: show a clean "not found" instead.
+        if block and not _has_topic_evidence(question, chunks):
+            yield "sources", []
+            yield "token", NOT_FOUND
+            return
         # Third attempt: summarize what the textbook says on the topic.
         parts = []
         refused = True
@@ -1081,6 +1111,10 @@ Do not include previous-question answers or unrelated options.
         if not refused and parts:
             answer = "".join(parts).strip()
             if answer:
+                if _summary_says_no_info(answer):
+                    yield "sources", []
+                    yield "token", NOT_FOUND
+                    return
                 if deterministic_fact:
                     answer = _format_fact_answer(answer, intent, question)
                 yield "token", answer
@@ -1088,4 +1122,5 @@ Do not include previous-question answers or unrelated options.
     except Exception:
         yield "token", "Unable to generate an answer right now."
         return
+    yield "sources", []
     yield "token", NOT_FOUND

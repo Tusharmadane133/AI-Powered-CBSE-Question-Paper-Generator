@@ -90,7 +90,7 @@ RULES:
 4. Do not mention sources, pages or retrieval.
 5. Do not say "The textbook does not answer this directly."
 6. Do not say "Here is what it says on this topic."
-7. Do not begin with a refusal.
+7. If the supplied text has no information about the QUESTION, output exactly: I could not find this in the selected textbook.
 8. English question -> English.
 9. Hindi Devanagari -> Hindi.
 10. Marathi Devanagari -> Marathi.

@@ -11,7 +11,7 @@ _STOP = {
     "give", "name", "write", "their", "there", "them", "they", "your", "into",
     "also", "each", "more", "such", "define", "state", "list", "how", "why",
     "when", "where", "who", "are", "and", "the", "title", "chapter", "grade",
-    "science", "textbook",
+    "science", "textbook", "unit", "units", "value", "values",
 }
 # ============================================================
 # BASIC HELPERS
@@ -977,6 +977,18 @@ def retrieve(
         items = [it for it in items if _key(it) in exact_keys or it.get("keyword_hits", 0) >= 2]
     elif not any(it.get("keyword_hits", 0) > 0 for it in items):
         return []
+    # STEP 7b - TOPIC-TERM GATE FOR SHORT FACT QUESTIONS
+    # "SI unit of resistivity": keep only chunks that contain the topic word.
+    if intent in {"definition", "unit", "formula"}:
+        _tterms = _topic_terms(question)
+        if _tterms:
+            _pats = [re.compile(rf"\b{re.escape(t)}\b") for t in _tterms]
+            items = [
+                it for it in items
+                if any(p.search((it.get("text") or "").lower()) for p in _pats)
+            ]
+            if not items:
+                return []
     # STEP 8 - FINAL SORT
     items.sort(key=lambda x: x["score"], reverse=True)
     return items[:top_k]
