@@ -605,6 +605,33 @@ def _looks_true_false_statement(question):
     ql = q.lower().rstrip(".!").strip()
     if ql.startswith(("true or false", "state whether", "is it true", "is it false")):
         return True
+    # Plain declarative sentence ending with "." -> treat as a True/False statement.
+    _cmd = {
+        "draw", "find", "calculate", "derive", "mention", "distinguish",
+        "discuss", "justify", "show", "prove", "tell", "identify", "classify",
+        "label", "solve", "outline", "illustrate", "enumerate", "summarise",
+        "summarize", "suggest", "complete", "fill", "match", "choose",
+        "select", "arrange", "predict", "think", "observe", "consider",
+        "let", "using",
+    }
+    _verbs = {
+        "is", "are", "was", "were", "has", "have", "had", "does", "do", "can",
+        "cannot", "will", "may", "must", "always", "never", "forms", "form",
+        "gives", "give", "produces", "produce", "converges", "diverges",
+        "converge", "diverge", "reflects", "refracts", "bends", "travels",
+        "moves", "causes", "depends", "increases", "decreases", "equals",
+        "contains", "consists", "lies", "occurs", "takes", "helps", "needs",
+        "needed", "used", "called", "known",
+    }
+    _words = ql.split()
+    if (
+        len(_words) >= 5
+        and q.endswith((".", "!"))
+        and not ql.startswith(_ENGLISH_STARTERS)
+        and _words[0] not in _cmd
+        and any(w.strip(",;:") in _verbs for w in _words)
+    ):
+        return True
     patterns = (
         r"^(plants?|animals?|humans?|cells?|a|an|the)\b.*\b(is|are|was|were|has|have|does|do|can|cannot|cannot|will|will not|does not|do not|is not|are not)\b",
         r"^\b[A-Za-z][A-Za-z\s-]+\b\s+(is|are|was|were|has|have|does|do|can|cannot|will)\b",
@@ -650,8 +677,26 @@ def _looks_multi_part_question(question):
     )
     marker_hits = sum(1 for marker in markers if marker in ql)
     return marker_hits >= 2 or ("think of situations" in ql and "what problems" in ql)
+_SUP = str.maketrans("0123456789-\u2212\u2013", "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079\u207b\u207b\u207b")
+
+
+def _fix_superscripts(text):
+    """PDF text loses superscripts: '3x108 m s-1' -> '3x10^8 m s^-1' (real superscripts)."""
+    def _pow10(m):
+        return m.group(1) + "10" + m.group(2).translate(_SUP)
+
+    text = re.sub(r"(\u00d7\s*)10([\u2212\u2013-]?[1-9]\d?)(?=\D|$)", _pow10, text)
+    text = re.sub(
+        r"\b(m\s*s)([\u2212\u2013-]\d)\b",
+        lambda m: m.group(1) + m.group(2).translate(_SUP),
+        text,
+    )
+    return text
+
+
 def _format_fact_answer(answer, intent, question=""):
     text = str(answer or "").strip()
+    text = _fix_superscripts(text)
     question_text = str(question or "").strip().lower()
     option_matches = re.findall(r"(?im)^\s*\(?([a-d])\)?[.)]?\s+([^\n]+)", text)
     if len(option_matches) > 1:
