@@ -32,6 +32,20 @@ _REWRITE_PROMPT = (
     "Question: {q}\n"
     "Search query:"
 )
+_REWRITE_PROMPT = (
+    "Translate the school science textbook question below into a short English "
+    "search query (maximum 12 words). Translate the MEANING, do not transliterate. "
+    "Many Marathi and Hindi words have several meanings; choose the meaning used in a "
+    "school science textbook. Keep scientific terms and names exactly. "
+    "Never write square brackets or placeholders. "
+    "Output only the English query, nothing else.\n\n"
+    "Question: \u092a\u094d\u0930\u0915\u093e\u0936\u093e\u091a\u0947 \u092a\u0930\u093e\u0935\u0930\u094d\u0924\u0928 \u092e\u094d\u0939\u0923\u091c\u0947 \u0915\u093e\u092f?\n"
+    "Search query: reflection of light\n\n"
+    "Question: \u0917\u094d\u0930\u0939\u0923 \u0915\u0938\u0947 \u0939\u094b\u0924\u0947?\n"
+    "Search query: how does an eclipse happen\n\n"
+    "Question: {q}\n"
+    "Search query:"
+)
 _ENGLISH_STARTERS = (
     "what", "why", "how", "when", "where", "which", "who", "define",
     "explain", "describe", "state", "give", "write", "list", "name",
@@ -142,6 +156,7 @@ def _rewrite_query(question):
                 "prompt": _REWRITE_PROMPT.format(q=question),
                 "stream": False,
                 "options": {"temperature": 0, "num_predict": 40},
+                "keep_alive": "30m",
             }
         ).encode("utf-8")
         request = urllib.request.Request(
@@ -150,7 +165,7 @@ def _rewrite_query(question):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=180) as response:
             data = json.loads(response.read().decode("utf-8"))
         result = str(data.get("response", "")).strip()
         if not result:
@@ -161,6 +176,7 @@ def _rewrite_query(question):
         # Keep only the first line.
         lines = result.splitlines()
         result = lines[0].strip() if lines else ""
+        result = re.sub(r"\[[^\]]*\]", "", result).strip(" ,.;:")  # STEP-STRIP-BRACKETS
         return result or question
     except Exception:
         return question
@@ -630,6 +646,13 @@ def _looks_true_false_statement(question):
         and not ql.startswith(_ENGLISH_STARTERS)
         and _words[0] not in _cmd
         and any(w.strip(",;:") in _verbs for w in _words)
+        # STEP-GUARD-TF: one sentence only, and no command word inside it
+        and not re.search(r"[.!]\s+\S", q)
+        and not re.search(
+            r"\b(find|calculate|determine|compute|estimate|justify|explain|"
+            r"describe|define|draw|write|name|list|identify|state)\b",
+            ql,
+        )
     ):
         return True
     patterns = (
@@ -1115,6 +1138,13 @@ For an incomplete MCQ stem such as "The brain is responsible for", never return 
 For a multi-part question, answer every explicit part in order; never stop after answering only the first part.
 Do not include previous-question answers or unrelated options.
 """
+        # Only buffer the answer for MCQ-style questions. Normal answers must stream as they are:
+        # buffering by regex on single stream pieces moved pieces like "a locke" to the end of the answer.
+        buffer_answer = (
+            deterministic_fact
+            or mcq_stem
+            or bool(re.match(r"^\s*which\s+of\s+the\s+following\b", question, re.IGNORECASE))
+        )
         for system_prompt in (SYSTEM_PROMPT, RELAXED_SYSTEM_PROMPT):
             refused = True
             fact_parts = []
@@ -1124,14 +1154,14 @@ Do not include previous-question answers or unrelated options.
                 block_devanagari=block,
             ):
                 if kind == "token":
-                    if deterministic_fact or re.search(r"(?im)^\s*\(?[a-d]\)?[.)]?\s+", value):
+                    if buffer_answer:
                         fact_parts.append(value)
                     else:
                         yield "token", value
                 else:
                     refused = value
             if not refused:
-                if deterministic_fact or fact_parts:
+                if fact_parts:
                     answer = _format_fact_answer("".join(fact_parts), intent, question)
                     if answer:
                         yield "token", answer

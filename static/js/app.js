@@ -31,6 +31,11 @@ const lives = new Map();   // chat id -> running answer (each chat can generate 
 const BASE_TITLE = document.title;
 let CLS = store.get("cls"), SUB = store.get("sub");
 try { chats = JSON.parse(store.get("chats", "[]")); if (!Array.isArray(chats)) chats = []; } catch { chats = []; }
+try { const s = JSON.parse(store.get("subjects", "{}")); if (s && typeof s === "object" && !Array.isArray(s)) SUBJECTS = s; } catch {}   // instant sidebar on load
+try { history.scrollRestoration = "manual"; } catch {}
+/* chat id like ChatGPT: long random UUID in the URL (/c/3f2b8c1e-....) */
+const newId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+  : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 3 | 8)).toString(16); });
 
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
 async function* ndjson(res) {
@@ -45,8 +50,11 @@ async function* ndjson(res) {
   if (buf.trim()) { try { yield JSON.parse(buf); } catch {} }
 }
 const save = () => { store.set("chats", JSON.stringify(chats.slice(0, 40))); };
+let unloading = false;   // reload/close in progress: do not mark running answers as failed
+addEventListener("beforeunload", () => { unloading = true; });
+addEventListener("pagehide", () => { unloading = true; });
 /* URL per chat (like ChatGPT): /c/<id> -> refresh and back/forward keep the chat */
-function pushUrl(id) { const want = id ? "/c/" + id : "/"; if (location.pathname === want && !location.hash) return; history.pushState(null, "", want); }
+function pushUrl(id) { const want = id ? "/chat/" + id : "/"; if (location.pathname === want && !location.hash) return; history.pushState(null, "", want); }
 function updateDocTitle() { document.title = cur && cur.title ? cur.title + " - " + BASE_TITLE : BASE_TITLE; }
 function setBusy(b) { const s = $("send"); s.innerHTML = svg(b ? "stop" : "send"); s.title = b ? "Stop generating" : "Send"; s.setAttribute("aria-label", s.title); }
 
@@ -127,13 +135,13 @@ function emptyState() {
   $("chat").appendChild(e);
 }
 function newChat(push = true) {
-  cur = {id: Date.now(), title: "", messages: []};
+  cur = {id: newId(), title: "", messages: []};
   if (push) pushUrl(null);
   setBusy(false); emptyState(); renderHistory(); updateDocTitle();
   document.body.classList.remove("open"); $("q").focus();
 }
 function openChat(id, push = true) {
-  const c = chats.find(k => k.id === id);
+  const c = chats.find(k => String(k.id) === String(id));
   if (!c) return newChat(push);
   cur = c; if (push) pushUrl(c.id);
   $("chat").replaceChildren(); msgsBox = null;
@@ -148,12 +156,16 @@ function openChat(id, push = true) {
   stick = true; setBusy(lives.has(cur.id)); renderHistory(); updateDocTitle(); document.body.classList.remove("open"); scrollEnd(true);
 }
 function route() {
-  const m = location.pathname.match(/^\/c\/(\d+)\/?$/) || location.hash.match(/^#\/c\/(\d+)$/), id = m && Number(m[1]);
-  if (id && chats.some(c => c.id === id)) openChat(id, false);
+  const m = location.pathname.match(/^\/(?:chat|c)\/([\w-]+)\/?$/) || location.hash.match(/^#\/(?:chat|c)\/([\w-]+)$/), id = m && m[1];
+  const found = id && chats.find(c => String(c.id) === id);
+  if (found) openChat(found.id, false);
   else { if (location.pathname !== "/" || location.hash) history.replaceState(null, "", "/"); newChat(false); }
 }
 window.addEventListener("popstate", route);
-$("newChat").onclick = newChat;
+$("newChat").onclick = () => {
+  if (location.pathname === "/" && !location.hash) location.reload();
+  else location.href = "/";
+};
 
 /* ---------- messages ---------- */
 function box() { if (!msgsBox) { $("chat").replaceChildren(); msgsBox = el("div", "msgs"); $("chat").appendChild(msgsBox); } return msgsBox; }
@@ -184,6 +196,43 @@ function botMsg(text, srcs, q) {
   r.appendChild(col); box().appendChild(r); scrollEnd(); return {col, body};
 }
 
+/* ---------- streaming (server keeps generating; browser can reconnect after reload) ---------- */
+async function runStream(chat, msg, lv, open) {
+  let stopped = false, failed = false, errText = "", lastSave = 0;
+  try {
+    const res = await open(lv.ctrl.signal);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    for await (const m of ndjson(res)) {
+      if (m.type === "job") { msg.job = m.data; save(); }
+      else if (m.type === "sources") msg.sources = m.data;
+      else if (m.type === "token") {
+        if (lv.fresh) { msg.text = ""; lv.fresh = false; }   // resume: replay from start, old text stayed visible until now
+        msg.text += m.data;
+        if (!lv.raf) lv.raf = requestAnimationFrame(() => {
+          lv.raf = 0;
+          if (lv.ui) { lv.ui.body.classList.remove("dots"); renderMd(lv.ui.body, msg.text); }
+          if (cur === chat) scrollEnd();
+        });
+        if (Date.now() - lastSave > 1000) { save(); lastSave = Date.now(); }   // survives refresh mid-answer
+      }
+      else if (m.type === "error") { failed = true; errText = m.data; }
+    }
+  } catch (e) { if (e.name === "AbortError") stopped = true; else { failed = true; errText = String(e); } }
+  if (unloading) return;   // page is reloading: keep partial + job id so the answer resumes after reload
+  msg.partial = false; delete msg.job;
+  if (failed) { msg.error = true; msg.text = "Error: " + errText + (errText.includes("11434") || /connect/i.test(errText) ? "  — is Ollama running? (ollama serve)" : ""); }
+  else if (stopped && !msg.text) { msg.text = "Stopped."; }
+  const done = lv.ui; lives.delete(chat.id); if (cur === chat) setBusy(false);
+  save(); renderHistory();
+  if (cur === chat) {
+    if (!done) { openChat(chat.id, false); return; }   // chat was opened after stream started: redraw it
+    done.body.classList.remove("dots");
+    if (msg.error) { done.body.classList.add("err"); done.body.textContent = msg.text; }
+    else { renderMd(done.body, msg.text); if (msg.sources.length) done.col.appendChild(srcChips(msg.sources)); done.col.appendChild(actions(msg.text, msg.q)); }
+    $("q").focus(); scrollEnd();
+  }
+}
+
 async function ask(override) {
   const text = (typeof override === "string" ? override : $("q").value).trim(); if (!text) return;
   if (!cur) newChat();
@@ -199,35 +248,11 @@ async function ask(override) {
   userMsg(text);
   if (typeof override !== "string") { $("q").value = ""; autosize(); }
   const ui = botMsg("", []); ui.body.classList.add("dots");
-  const ctrl = new AbortController(), lv = {chat, msg, ui, ctrl};
+  const lv = {chat, msg, ui, ctrl: new AbortController()};
   lives.set(chat.id, lv);
   stick = true; scrollEnd(true); setBusy(true);
-  let stopped = false, failed = false, errText = "", lastSave = 0;
-  try {
-    const res = await fetch("/api/ask", {method: "POST", headers: {"Content-Type": "application/json"}, signal: ctrl.signal,
-      body: JSON.stringify({question: text, class: CLS, subject: SUB, book: "Curiosity", history})});
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    for await (const m of ndjson(res)) {
-      if (m.type === "sources") msg.sources = m.data;
-      else if (m.type === "token") {
-        msg.text += m.data;
-        lv.ui.body.classList.remove("dots"); renderMd(lv.ui.body, msg.text); if (cur === chat) scrollEnd();
-        if (Date.now() - lastSave > 1000) { save(); lastSave = Date.now(); }   // survives refresh mid-answer
-      }
-      else if (m.type === "error") { failed = true; errText = m.data; }
-    }
-  } catch (e) { if (e.name === "AbortError") stopped = true; else { failed = true; errText = String(e); } }
-  msg.partial = false;
-  if (failed) { msg.error = true; msg.text = "Error: " + errText + (errText.includes("11434") || /connect/i.test(errText) ? "  — is Ollama running? (ollama serve)" : ""); }
-  else if (stopped && !msg.text) { msg.text = "Stopped."; }
-  const done = lv.ui; lives.delete(chat.id); if (cur === chat) setBusy(false);
-  save(); renderHistory();
-  if (cur === chat) {
-    done.body.classList.remove("dots");
-    if (msg.error) { done.body.classList.add("err"); done.body.textContent = msg.text; }
-    else { renderMd(done.body, msg.text); if (msg.sources.length) done.col.appendChild(srcChips(msg.sources)); done.col.appendChild(actions(msg.text, text)); }
-    $("q").focus(); scrollEnd();
-  }
+  runStream(chat, msg, lv, signal => fetch("/api/ask", {method: "POST", headers: {"Content-Type": "application/json"}, signal,
+    body: JSON.stringify({question: text, class: CLS, subject: SUB, book: "Curiosity", history})}));
 }
 function autosize() { const q = $("q"); q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 180) + "px"; }
 $("q").addEventListener("input", autosize);
@@ -238,9 +263,20 @@ $("q").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey &
 async function init() {
   setThemeIcon(); renderClasses(); renderSubjects(); updateCtx();
   setBusy(false);
-  // a page reload kills any running answer: close it cleanly
-  chats.forEach(c => (c.messages || []).forEach(m => { if (m.partial) { m.partial = false; if (!m.text) { m.error = true; m.text = "Response was interrupted. Please ask again."; } } }));
+  // after reload: if the server still has the job, resume the answer; otherwise mark it interrupted
+  const resumed = [];
+  chats.forEach(c => (c.messages || []).forEach(m => {
+    if (!m.partial) return;
+    if (m.job) {
+      const lv = {chat: c, msg: m, ui: null, ctrl: new AbortController(), fresh: true};
+      lives.set(c.id, lv); resumed.push(lv);
+    } else {
+      m.partial = false;
+      if (!m.text) { m.error = true; m.text = "Response was interrupted. Please ask again."; }
+    }
+  }));
   save(); route();   // restore the chat from the URL (/c/<id>)
+  resumed.forEach(lv => runStream(lv.chat, lv.msg, lv, signal => fetch("/api/stream/" + lv.msg.job + "?from=0", {signal})));
   // health check runs in parallel: a slow/busy Ollama must not block loading classes & subjects
   fetch("/api/health").then(r => r.json()).then(h => {
     $("status").title = h.ollama ? "Ollama running: " + h.model : "Ollama is not running";
@@ -253,7 +289,7 @@ async function loadSubjects(attempt = 0) {
   try {
     const r = await fetch("/api/subjects"), d = await r.json();
     if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
-    SUBJECTS = d;
+    SUBJECTS = d; store.set("subjects", JSON.stringify(d));
     // drop saved filters that no longer exist
     if (CLS && !SUBJECTS[CLS]) CLS = "";
     if (SUB && !subjectsFor(CLS).includes(SUB)) SUB = "";
@@ -268,4 +304,7 @@ async function loadSubjects(attempt = 0) {
     if (attempt < 10) setTimeout(() => loadSubjects(attempt + 1), 3000);
   }
 }
+// KaTeX scripts are deferred, so they load after this file: render math in already-drawn answers once ready
+addEventListener("DOMContentLoaded", () => { document.querySelectorAll("#chat .body").forEach(mathify); scrollEnd(true); });
+addEventListener("load", () => { document.querySelectorAll("#chat .body:not(.dots)").forEach(b => { if (!b.querySelector(".katex")) mathify(b); }); scrollEnd(true); });
 init();

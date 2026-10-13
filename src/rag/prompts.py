@@ -4,6 +4,12 @@ NOT_FOUND_TEXT = "I could not find this in the selected textbook."
 
 _DEVANAGARI = re.compile(r"[\u0900-\u097F]")
 _BLANK = re.compile(r"_{2,}|\.{4,}|…+")
+# questions that need a complete answer (list of items and/or the reason), not one line
+_DETAIL = re.compile(
+    r"\b(which|list|all|give|name|explain|describe|why|how|steps?|examples?|"
+    r"differences?|compare|properties|types|kinds|find|show|prove|pattern)\b",
+    re.I,
+)
 
 
 SYSTEM_PROMPT = """You are a CBSE tutor for Classes 8, 9 and 10.
@@ -46,6 +52,14 @@ FORMAT RULES:
 29. Do not use MCQ options as facts unless explanatory text independently confirms them.
 30. Use simple original wording.
 31. Stop immediately after the supported answer.
+32. The textbook text may contain broken formula fragments (a lone digit or symbol on its own line). Ignore them and write formulas cleanly, one equation per line.
+
+COMPLETE ANSWER RULES (these define what "the supported answer" in rules 4 and 31 includes):
+33. If the question asks "which", "list", "name", "give" or "find" several items or numbers, write the COMPLETE list of every such item that is present in the supplied text, in one line, before anything else.
+34. If the question also asks why or how, or the supplied text gives the reason or rule behind the answer, add the reason after the list as 2 to 4 short numbered points (1., 2., 3.), using only the supplied text.
+35. For explain, describe, steps, examples, differences or compare questions, cover every supported point from the supplied text. Do not stop after one sentence.
+36. Rules 23 and 31 apply only to simple one-fact questions. A one-line answer to a question that needs a list or a reason is incomplete.
+37. If the list or reason is only partly present in the supplied text, give the supported part and say: "The textbook text does not give the rest."
 """
 
 
@@ -76,6 +90,8 @@ RULES:
 20. Do not mention sources, pages, CONTEXT or retrieval.
 21. Do not use MCQ options as facts unless explanatory text confirms them.
 22. Use simple original wording and stop after the supported answer.
+23. If the question asks "which", "list", "name", "give" or "find" several items or numbers, write the complete list of every such item present in the supplied text first.
+24. If the supplied text gives the reason or rule behind the answer, add it after the list as 2 to 4 short numbered points. A one-line answer to a question that needs a list or a reason is incomplete.
 """
 
 
@@ -107,7 +123,30 @@ def _language_line(question):
             "Do not use Hindi, Marathi, or Devanagari."
         )
 
-    return "LANGUAGE: Answer in the same language as the QUESTION."
+    q = question or ""
+    hindi_markers = (
+        "\u0939\u0948", "\u0939\u0948\u0902", "\u0915\u094d\u092f\u093e", "\u092e\u0947\u0902",
+        "\u0915\u0948\u0938\u0947", "\u0915\u094d\u092f\u094b\u0902", "\u0915\u094c\u0928",
+    )
+    marathi_markers = (
+        "\u092e\u094d\u0939\u0923\u091c\u0947", "\u0915\u093e\u092f", "\u0906\u0939\u0947",
+        "\u0906\u0939\u0947\u0924", "\u092e\u0927\u094d\u092f\u0947", "\u0906\u0923\u093f",
+        "\u0915\u0938\u0947", "\u091a\u094d\u092f\u093e", "\u091a\u0947 ", "\u091a\u0940 ",
+        "\u091a\u093e ",
+    )
+    if any(m in q for m in hindi_markers):
+        lang, short = "Hindi (\u0939\u093f\u0928\u094d\u0926\u0940)", "Hindi"
+    elif any(m in q for m in marathi_markers):
+        lang, short = "Marathi (\u092e\u0930\u093e\u0920\u0940)", "Marathi"
+    else:
+        return "LANGUAGE: Answer in the same language as the QUESTION."
+    return (
+        f"LANGUAGE: Answer ONLY in {lang}, in Devanagari script. "
+        "The textbook text may be in English: translate its facts into simple, correct "
+        f"{short} and keep scientific terms and numbers. "
+        "Do not copy English sentences. Do not repeat the question. "
+        "Start directly with the answer."
+    )
 
 
 def _blank_line(question):
@@ -121,6 +160,22 @@ def _blank_line(question):
         )
 
     return ""
+
+
+def _detail_line(question):
+    """Extra instruction for which/list/explain questions that need a complete answer."""
+    q = question or ""
+    if _BLANK.search(q) or not _DETAIL.search(q):
+        return ""
+
+    return (
+        "QUESTION TYPE: Needs a complete answer. "
+        "If the question asks which, list, name, give or find several items or numbers, "
+        "write the complete list of every such item present in the supplied text first. "
+        "Then, if the supplied text gives the reason or rule, add 2 to 4 short numbered points "
+        "(1., 2., 3.) explaining it. "
+        "Use only the supplied text. Do not stop after one line."
+    )
 
 
 def build_user_prompt(question, chunks):
@@ -137,6 +192,7 @@ QUESTION:
 
 {_language_line(question)}
 {_blank_line(question)}
+{_detail_line(question)}
 
 IMPORTANT:
 - Answer using ONLY the supplied textbook text.

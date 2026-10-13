@@ -29,7 +29,7 @@ REWRITE_QUERY = True         # LLM rewrites Marathi/Hindi/Hinglish question into
 
 # --- LLM via Ollama ---
 OLLAMA_URL = "http://127.0.0.1:11434"
-LLM_MODEL = "qwen2.5:7b"     # alternatives: llama3.1:8b, gemma2:9b, qwen2.5:3b (low RAM)
+LLM_MODEL = "gemma3:12b"     # alternatives: llama3.1:8b, gemma2:9b, qwen2.5:3b (low RAM)
 LLM_TEMPERATURE = 0.0
 LLM_NUM_CTX = 8192
 REPEAT_PENALTY = 1.15        # fixes repetition loops (e.g. "aavesh var aatmakta ...")

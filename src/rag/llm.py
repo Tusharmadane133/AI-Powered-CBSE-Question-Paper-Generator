@@ -12,16 +12,31 @@ def check_ollama() -> bool:
         return False
 
 
+def _repeat_penalty():
+    # RAG answers must copy words from the textbook text. A repeat penalty above ~1.0 punishes
+    # exactly those words and produces garbage like "toggleodd" and "factors.a locked an".
+    # Endless loops are already stopped by _is_looping() in rag_pipeline.py, so keep this at 1.0.
+    return min(float(getattr(config, "REPEAT_PENALTY", 1.0)), 1.02)
+
+
+def _temperature(value=None):
+    t = value if value is not None else config.LLM_TEMPERATURE
+    return min(float(t), 0.2)  # textbook answers must be factual, not creative
+
+
 def stream_chat(system, user):
     """Yield tokens from Ollama /api/chat."""
     payload = {
         "model": config.LLM_MODEL,
         "stream": True,
+        "keep_alive": "30m",
         "options": {
-            "temperature": config.LLM_TEMPERATURE,
+            "temperature": _temperature(),
+            "top_p": 0.9,
             "num_ctx": config.LLM_NUM_CTX,
-            "repeat_penalty": getattr(config, "REPEAT_PENALTY", 1.15),  # stops "word word word" loops
-            "num_predict": getattr(config, "MAX_TOKENS", 800),          # hard cap on answer length
+            "repeat_penalty": _repeat_penalty(),   # light: still stops "word word word" loops
+            "repeat_last_n": 64,                   # only look at recent words, not the whole text
+            "num_predict": getattr(config, "MAX_TOKENS", 1000),  # hard cap on answer length
         },
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
     }
