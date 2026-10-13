@@ -43,3 +43,4 @@ IMPORTANT: Qdrant local mode allows one process at a time. Stop `python app.py` 
 - EMBED_MODEL: multilingual-e5-base or BAAI/bge-m3 for better Marathi/Hindi (update EMBED_DIM, re-ingest with --reset).
 - LLM_MODEL: qwen2.5:7b (best multilingual balance), llama3.1:8b, gemma2:9b. Low RAM: qwen2.5:3b.
 - PAPER_CONTEXT_CHUNKS / LLM_NUM_CTX: more context per generation call (needs more RAM).
+Updated on 13 Oct 2026
