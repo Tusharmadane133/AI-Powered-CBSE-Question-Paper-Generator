@@ -4,6 +4,7 @@ Run: python -m src.ingestion.ingest [--reset]
 import argparse
 import hashlib
 import io
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -47,10 +48,58 @@ def ocr_page(page) -> str:
         return ""
 
 
+def extract_printed_page(page, text: str):
+    """Best-effort extraction of the page number printed on the textbook page.
+
+    Keep this separate from the PDF viewer page index: `page` is the PDF page
+    used to open the document, while `printed_page` is only a citation label.
+    Returns None when a reliable-looking printed page number is not found.
+    """
+    candidates = []
+    try:
+        page_dict = page.get_text("dict") or {}
+        height = float(page.rect.height or 0)
+        width = float(page.rect.width or 0)
+        for block in page_dict.get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    value = str(span.get("text", "")).strip()
+                    if not re.fullmatch(r"\d{1,4}", value):
+                        continue
+                    number = int(value)
+                    if number < 1 or number > 2000:
+                        continue
+                    bbox = span.get("bbox") or (0, 0, 0, 0)
+                    y0, y1 = float(bbox[1]), float(bbox[3])
+                    x0, x1 = float(bbox[0]), float(bbox[2])
+                    # Page numbers normally sit close to the top or bottom edge.
+                    edge_distance = min(y0, max(0.0, height - y1))
+                    if height and edge_distance <= height * 0.14:
+                        # Prefer numbers closer to an edge, then numbers near a corner.
+                        corner_bonus = 0 if (x0 < width * 0.18 or x1 > width * 0.82) else 1
+                        candidates.append((edge_distance, corner_bonus, number))
+    except Exception:
+        pass
+
+    if candidates:
+        candidates.sort()
+        return candidates[0][2]
+
+    # Fallback for OCR/text extraction where the page number is an isolated line.
+    lines = [line.strip() for line in (text or "").splitlines()]
+    isolated = [
+        int(line) for line in lines
+        if re.fullmatch(r"\d{1,4}", line) and 1 <= int(line) <= 2000
+    ]
+    if len(isolated) == 1:
+        return isolated[0]
+    return None
+
+
 def extract_pages(pdf_path: Path):
     doc = fitz.open(pdf_path)
     try:
-        for page_no, page in enumerate(doc, start=1):
+        for pdf_page_no, page in enumerate(doc, start=1):
             extracted = clean_text(page.get_text("text") or "")
             text = extracted
 
@@ -66,7 +115,8 @@ def extract_pages(pdf_path: Path):
                     text = ocr_text
 
             if text:
-                yield page_no, text
+                printed_page = extract_printed_page(page, text)
+                yield pdf_page_no, printed_page, text
     finally:
         doc.close()
 
@@ -76,20 +126,14 @@ def discover_pdfs():
         rel = pdf.relative_to(config.BOOKS_DIR).parts
 
         if len(rel) < 3:
-            print(
-                f"[skip] {pdf} "
-                "(expected <class>/<subject>/file.pdf)"
-            )
+            print(f"[skip] {pdf} (expected <class>/<subject>/file.pdf)")
             continue
 
         try:
             class_no = parse_class(rel[0])
             subject = parse_subject(rel[1])
         except Exception as e:
-            print(
-                f"[skip] {pdf} "
-                f"(could not parse class/subject: {e})"
-            )
+            print(f"[skip] {pdf} (could not parse class/subject: {e})")
             continue
 
         yield pdf, class_no, subject
@@ -105,116 +149,99 @@ def main():
     args = parser.parse_args()
 
     client = QdrantClient(path=config.QDRANT_PATH)
+    try:
+        exists = client.collection_exists(config.COLLECTION)
 
-    exists = client.collection_exists(config.COLLECTION)
+        if args.reset and exists:
+            client.delete_collection(config.COLLECTION)
+            exists = False
 
-    if args.reset and exists:
-        client.delete_collection(config.COLLECTION)
-        exists = False
+        if not exists:
+            client.create_collection(
+                config.COLLECTION,
+                vectors_config=VectorParams(
+                    size=config.EMBED_DIM,
+                    distance=Distance.COSINE,
+                ),
+            )
 
-    if not exists:
-        client.create_collection(
-            config.COLLECTION,
-            vectors_config=VectorParams(
-                size=config.EMBED_DIM,
-                distance=Distance.COSINE,
-            ),
-        )
+        pdfs = list(discover_pdfs())
+        if not pdfs:
+            print(
+                f"No PDFs found in {config.BOOKS_DIR}. "
+                "Copy your books there first."
+            )
+            return
 
-    pdfs = list(discover_pdfs())
+        total_pages = 0
+        total_chunks = 0
 
-    if not pdfs:
-        print(
-            f"No PDFs found in {config.BOOKS_DIR}. "
-            "Copy your books there first."
-        )
-        return
+        for pdf, class_no, subject in pdfs:
+            print(f"\n>> Class {class_no} | {subject} | {pdf.name}")
+            texts = []
+            metas = []
+            pages = 0
 
-    total_pages = 0
-    total_chunks = 0
-
-    for pdf, class_no, subject in pdfs:
-        print(
-            f"\n>> Class {class_no} | "
-            f"{subject} | {pdf.name}"
-        )
-
-        texts = []
-        metas = []
-        pages = 0
-
-        for page_no, text in extract_pages(pdf):
-            pages += 1
-
-            for chunk in chunk_text(
-                text,
-                config.CHUNK_CHARS,
-                config.CHUNK_OVERLAP,
-            ):
-                chunk = clean_text(chunk)
-
-                if not chunk:
-                    continue
-
-                texts.append(chunk)
-
-                metas.append(
-                    {
-                        "class": class_no,
-                        "subject": subject,
-                        "book": pdf.stem,
-                        "page": page_no,
-                        "text": chunk,
-                    }
-                )
-
-        print(f"   pages read: {pages}")
-        print(f"   chunks prepared: {len(texts)}")
-
-        for start in tqdm(
-            range(0, len(texts), 64),
-            desc="embedding",
-        ):
-            batch_texts = texts[start:start + 64]
-            batch_metas = metas[start:start + 64]
-
-            vectors = embed_passages(batch_texts)
-
-            points = []
-
-            for vector, meta in zip(vectors, batch_metas):
-                raw_id = hashlib.md5(
-                    (
-                        f"{pdf.resolve()}|"
-                        f"{meta['page']}|"
-                        f"{meta['text']}"
-                    ).encode("utf-8")
-                ).hexdigest()
-
-                point_id = str(uuid.UUID(raw_id))
-
-                points.append(
-                    PointStruct(
-                        id=point_id,
-                        vector=vector.tolist(),
-                        payload=meta,
+            for pdf_page_no, printed_page, text in extract_pages(pdf):
+                pages += 1
+                for chunk in chunk_text(
+                    text,
+                    config.CHUNK_CHARS,
+                    config.CHUNK_OVERLAP,
+                ):
+                    chunk = clean_text(chunk)
+                    if not chunk:
+                        continue
+                    texts.append(chunk)
+                    metas.append(
+                        {
+                            "class": class_no,
+                            "subject": subject,
+                            "book": pdf.stem,
+                            "page": pdf_page_no,
+                            "printed_page": printed_page,
+                            "text": chunk,
+                        }
                     )
-                )
 
-            if points:
-                client.upsert(
-                    config.COLLECTION,
-                    points,
-                )
+            print(f"   pages read: {pages}")
+            print(f"   chunks prepared: {len(texts)}")
 
-        total_pages += pages
-        total_chunks += len(texts)
+            for start in tqdm(range(0, len(texts), 64), desc="embedding"):
+                batch_texts = texts[start:start + 64]
+                batch_metas = metas[start:start + 64]
+                vectors = embed_passages(batch_texts)
+                points = []
 
-        print(f"   {len(texts)} chunks stored")
+                for vector, meta in zip(vectors, batch_metas):
+                    raw_id = hashlib.md5(
+                        (
+                            f"{pdf.resolve()}|"
+                            f"{meta['page']}|"
+                            f"{meta['text']}"
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    point_id = str(uuid.UUID(raw_id))
+                    points.append(
+                        PointStruct(
+                            id=point_id,
+                            vector=vector.tolist(),
+                            payload=meta,
+                        )
+                    )
 
-    print(f"\nDone. {total_pages} pages processed.")
-    print(f"Done. {total_chunks} chunks indexed.")
-    print(f"Collection: {config.COLLECTION}")
+                if points:
+                    client.upsert(config.COLLECTION, points)
+
+            total_pages += pages
+            total_chunks += len(texts)
+            print(f"   {len(texts)} chunks stored")
+
+        print(f"\nDone. {total_pages} pages processed.")
+        print(f"Done. {total_chunks} chunks indexed.")
+        print(f"Collection: {config.COLLECTION}")
+    finally:
+        client.close()
 
 
 if __name__ == "__main__":

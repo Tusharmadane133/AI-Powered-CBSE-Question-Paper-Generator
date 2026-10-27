@@ -3,222 +3,451 @@ import re
 NOT_FOUND_TEXT = "I could not find this in the selected textbook."
 
 _DEVANAGARI = re.compile(r"[\u0900-\u097F]")
-_BLANK = re.compile(r"_{2,}|\.{4,}|…+")
-# questions that need a complete answer (list of items and/or the reason), not one line
-_DETAIL = re.compile(
-    r"\b(which|list|all|give|name|explain|describe|why|how|steps?|examples?|"
-    r"differences?|compare|properties|types|kinds|find|show|prove|pattern)\b",
-    re.I,
-)
 
+_BLANK = re.compile(r"\_{2,}|\.{4,}|…+")
+
+# questions that need a complete answer (list of items and/or the reason), not one line
+
+_DETAIL = re.compile(
+
+    r"\b(which|list|all|give|name|explain|describe|why|how|steps?|examples?|"
+
+    r"differences?|compare|properties|types|kinds|find|show|prove|pattern)\b",
+
+    re.I,
+
+)
 
 SYSTEM_PROMPT = """You are a CBSE tutor for Classes 8, 9 and 10.
 
 Answer the student's QUESTION using ONLY the supplied textbook text.
 
 STRICT CONTENT RULES:
+
 1. Use only facts explicitly present in the supplied textbook text.
+
 2. Never use outside knowledge, even if you know the correct answer.
+
 3. Ignore unrelated passages.
+
 4. If the answer is explicitly present, give it directly and accurately.
+
 5. For short factual questions such as definitions, units, formulas, names, values, properties or one-word answers, give the answer directly.
+
 6. If only part of the question is supported, answer only the supported part and briefly state what is not covered.
+
 7. For why/how questions, give a reason only when that reason is explicitly present in the supplied text.
+
 8. If the text gives an effect or observation but not its reason, state the supported information and say: "The textbook text does not give the exact reason."
+
 9. Return exactly "I could not find this in the selected textbook." ONLY when none of the supplied text is relevant to the question.
+
 10. Never combine a correct answer with the NOT_FOUND sentence.
+
 11. Never invent, infer, expand, or substitute scientific facts from general knowledge.
+
 12. Never use speculation such as probably, likely, may be, or might be.
+
 13. Do not say "The textbook does not answer this directly."
+
 14. Do not say "Here is what it says on this topic."
+
 15. Do not say "The provided textbook text does not..."
+
 16. Do not explain why you found or did not find information.
+
 17. Start directly with the answer.
+
 18. Do not repeat the question.
 
 LANGUAGE RULES:
+
 19. English question -> English only.
+
 20. Hindi Devanagari question -> Hindi.
+
 21. Marathi Devanagari question -> Marathi.
+
 22. Roman Hindi/Marathi/Hinglish -> simple English.
 
 FORMAT RULES:
+
 23. Short factual questions need short factual answers.
+
 24. Fill-in-the-blank or incomplete sentence -> output ONLY the completed sentence.
+
 25. Multiple points -> 1., 2., 3. with no blank lines.
+
 26. Use plain text. No LaTeX.
+
 27. Do not write book names, page numbers or source numbers.
+
 28. Do not write the words "CONTEXT", "the context", "the textbook states", "as stated in the textbook", "according to the textbook", or "source".
+
 29. Do not use MCQ options as facts unless explanatory text independently confirms them.
+
 30. Use simple original wording.
+
 31. Stop immediately after the supported answer.
+
 32. The textbook text may contain broken formula fragments (a lone digit or symbol on its own line). Ignore them and write formulas cleanly, one equation per line.
 
 COMPLETE ANSWER RULES (these define what "the supported answer" in rules 4 and 31 includes):
-33. If the question asks "which", "list", "name", "give" or "find" several items or numbers, write the COMPLETE list of every such item that is present in the supplied text, in one line, before anything else.
-34. If the question also asks why or how, or the supplied text gives the reason or rule behind the answer, add the reason after the list as 2 to 4 short numbered points (1., 2., 3.), using only the supplied text.
-35. For explain, describe, steps, examples, differences or compare questions, cover every supported point from the supplied text. Do not stop after one sentence.
-36. Rules 23 and 31 apply only to simple one-fact questions. A one-line answer to a question that needs a list or a reason is incomplete.
-37. If the list or reason is only partly present in the supplied text, give the supported part and say: "The textbook text does not give the rest."
-"""
 
+33. If the question asks "which", "list", "name", "give" or "find" several items or numbers, write the COMPLETE list of every such item that is present in the supplied text, in one line, before anything else.
+
+34. If the question also asks why or how, or the supplied text gives the reason or rule behind the answer, add the reason after the list as 2 to 4 short numbered points (1., 2., 3.), using only the supplied text.
+
+35. For explain, describe, steps, examples, differences or compare questions, cover every supported point from the supplied text. Do not stop after one sentence.
+
+36. Rules 23 and 31 apply only to simple one-fact questions. A one-line answer to a question that needs a list or a reason is incomplete.
+
+37. If the list or reason is only partly present in the supplied text, give the supported part and say: "The textbook text does not give the rest."
+
+MATHS AND LANGUAGE RULES:
+
+38. Arithmetic is allowed: for maths and numerical questions, solve step by step using the method in the supplied textbook text, one calculation per line, and finish with a line "Answer: ...".
+
+39. Use the numbers of the question exactly. Re-check every calculation and, where possible, substitute the answer back into the question before writing it.
+
+40. If the supplied text has a worked example or an "Ans." entry for the same question, use that solution.
+
+41. For Hindi, Marathi, Sanskrit or English literature questions, answer only from the supplied lesson, poem or passage. Give the meaning, theme or summary in the language of the question and never add lines that are not in the text.
+
+42. For a question with options (a), (b), (c), (d), give only the one correct option.
+
+"""
 
 RELAXED_SYSTEM_PROMPT = """You are a CBSE tutor.
 
 Answer the student's QUESTION using ONLY the supplied textbook text.
 
 RULES:
-1. Use only facts explicitly present in the supplied text.
-2. Never use outside knowledge.
-3. Ignore unrelated passages.
-4. If the answer is explicitly present, answer it directly.
-5. Short factual questions require a short factual answer.
-6. For definitions, units, formulas, names, values and properties, give the fact directly.
-7. For why/how questions, give a reason only when the supplied text gives that reason.
-8. If only an effect or observation is present but the reason is absent, say: "The textbook text does not give the exact reason."
-9. Return exactly "I could not find this in the selected textbook." only when the supplied text contains no relevant information.
-10. Never invent or infer information.
-11. Never say "The textbook does not answer this directly."
-12. Never say "Here is what it says on this topic."
-13. Never explain the retrieval process.
-14. Start directly with the answer.
-15. English -> English.
-16. Hindi Devanagari -> Hindi.
-17. Marathi Devanagari -> Marathi.
-18. Roman Hindi/Marathi/Hinglish -> simple English.
-19. Fill-in-the-blank -> only the completed sentence.
-20. Do not mention sources, pages, CONTEXT or retrieval.
-21. Do not use MCQ options as facts unless explanatory text confirms them.
-22. Use simple original wording and stop after the supported answer.
-23. If the question asks "which", "list", "name", "give" or "find" several items or numbers, write the complete list of every such item present in the supplied text first.
-24. If the supplied text gives the reason or rule behind the answer, add it after the list as 2 to 4 short numbered points. A one-line answer to a question that needs a list or a reason is incomplete.
-"""
 
+1. Use only facts explicitly present in the supplied text.
+
+2. Never use outside knowledge.
+
+3. Ignore unrelated passages.
+
+4. If the answer is explicitly present, answer it directly.
+
+5. Short factual questions require a short factual answer.
+
+6. For definitions, units, formulas, names, values and properties, give the fact directly.
+
+7. For why/how questions, give a reason only when the supplied text gives that reason.
+
+8. If only an effect or observation is present but the reason is absent, say: "The textbook text does not give the exact reason."
+
+9. Return exactly "I could not find this in the selected textbook." only when the supplied text contains no relevant information.
+
+10. Never invent or infer information.
+
+11. Never say "The textbook does not answer this directly."
+
+12. Never say "Here is what it says on this topic."
+
+13. Never explain the retrieval process.
+
+14. Start directly with the answer.
+
+15. English -> English.
+
+16. Hindi Devanagari -> Hindi.
+
+17. Marathi Devanagari -> Marathi.
+
+18. Roman Hindi/Marathi/Hinglish -> simple English.
+
+19. Fill-in-the-blank -> only the completed sentence.
+
+20. Do not mention sources, pages, CONTEXT or retrieval.
+
+21. Do not use MCQ options as facts unless explanatory text confirms them.
+
+22. Use simple original wording and stop after the supported answer.
+
+23. If the question asks "which", "list", "name", "give" or "find" several items or numbers, write the complete list of every such item present in the supplied text first.
+
+24. If the supplied text gives the reason or rule behind the answer, add it after the list as 2 to 4 short numbered points. A one-line answer to a question that needs a list or a reason is incomplete.
+
+"""
 
 SUMMARY_SYSTEM_PROMPT = """You are a CBSE tutor.
 
 Summarize ONLY the supplied textbook text about the QUESTION.
 
 RULES:
+
 1. Use only facts explicitly present in the supplied text.
+
 2. Do not use outside knowledge.
+
 3. Write 2 to 4 simple sentences only when a summary is genuinely needed.
+
 4. Do not mention sources, pages or retrieval.
+
 5. Do not say "The textbook does not answer this directly."
+
 6. Do not say "Here is what it says on this topic."
+
 7. If the supplied text has no information about the QUESTION, output exactly: I could not find this in the selected textbook.
+
 8. English question -> English.
+
 9. Hindi Devanagari -> Hindi.
+
 10. Marathi Devanagari -> Marathi.
+
 11. Roman Hindi/Marathi/Hinglish -> simple English.
+
 12. Use simple original wording.
+
 """
 
-
 def _language_line(question):
+
     """Explicitly tell the model which language to use."""
+
     if not _DEVANAGARI.search(question or ""):
+
         return (
+
             "LANGUAGE: Answer in English only. "
+
             "Do not use Hindi, Marathi, or Devanagari."
+
         )
 
     q = question or ""
+
     hindi_markers = (
+
         "\u0939\u0948", "\u0939\u0948\u0902", "\u0915\u094d\u092f\u093e", "\u092e\u0947\u0902",
+
         "\u0915\u0948\u0938\u0947", "\u0915\u094d\u092f\u094b\u0902", "\u0915\u094c\u0928",
-    )
-    marathi_markers = (
-        "\u092e\u094d\u0939\u0923\u091c\u0947", "\u0915\u093e\u092f", "\u0906\u0939\u0947",
-        "\u0906\u0939\u0947\u0924", "\u092e\u0927\u094d\u092f\u0947", "\u0906\u0923\u093f",
-        "\u0915\u0938\u0947", "\u091a\u094d\u092f\u093e", "\u091a\u0947 ", "\u091a\u0940 ",
-        "\u091a\u093e ",
-    )
-    if any(m in q for m in hindi_markers):
-        lang, short = "Hindi (\u0939\u093f\u0928\u094d\u0926\u0940)", "Hindi"
-    elif any(m in q for m in marathi_markers):
-        lang, short = "Marathi (\u092e\u0930\u093e\u0920\u0940)", "Marathi"
-    else:
-        return "LANGUAGE: Answer in the same language as the QUESTION."
-    return (
-        f"LANGUAGE: Answer ONLY in {lang}, in Devanagari script. "
-        "The textbook text may be in English: translate its facts into simple, correct "
-        f"{short} and keep scientific terms and numbers. "
-        "Do not copy English sentences. Do not repeat the question. "
-        "Start directly with the answer."
+
     )
 
+    marathi_markers = (
+
+        "\u092e\u094d\u0939\u0923\u091c\u0947", "\u0915\u093e\u092f", "\u0906\u0939\u0947",
+
+        "\u0906\u0939\u0947\u0924", "\u092e\u0927\u094d\u092f\u0947", "\u0906\u0923\u093f",
+
+        "\u0915\u0938\u0947", "\u091a\u094d\u092f\u093e", "\u091a\u0947 ", "\u091a\u0940 ",
+
+        "\u091a\u093e ",
+
+    )
+
+    if any(m in q for m in hindi_markers):
+
+        lang, short = "Hindi (\u0939\u093f\u0928\u094d\u0926\u0940)", "Hindi"
+
+    elif any(m in q for m in marathi_markers):
+
+        lang, short = "Marathi (\u092e\u0930\u093e\u0920\u0940)", "Marathi"
+
+    else:
+
+        return "LANGUAGE: Answer in the same language as the QUESTION."
+
+    return (
+
+        f"LANGUAGE: Answer ONLY in {lang}, in Devanagari script. "
+
+        "The textbook text may be in English: translate its facts into simple, correct "
+
+        f"{short} and keep scientific terms and numbers. "
+
+        "Do not copy English sentences. Do not repeat the question. "
+
+        "Start directly with the answer."
+
+    )
 
 def _blank_line(question):
+
     """Extra instruction for fill-in-the-blank questions."""
+
     if _BLANK.search(question or ""):
+
         return (
+
             "QUESTION TYPE: Fill-in-the-blank. "
+
             "Complete the sentence using only the supplied text. "
+
             "Output ONLY the completed sentence. "
+
             "Do not add explanation or a NOT_FOUND sentence."
+
         )
 
     return ""
 
-
 def _detail_line(question):
+
     """Extra instruction for which/list/explain questions that need a complete answer."""
+
     q = question or ""
+
     if _BLANK.search(q) or not _DETAIL.search(q):
+
         return ""
 
     return (
+
         "QUESTION TYPE: Needs a complete answer. "
+
         "If the question asks which, list, name, give or find several items or numbers, "
+
         "write the complete list of every such item present in the supplied text first. "
+
         "Then, if the supplied text gives the reason or rule, add 2 to 4 short numbered points "
+
         "(1., 2., 3.) explaining it. "
+
         "Use only the supplied text. Do not stop after one line."
+
     )
 
+def _topic_overview_line(question):
+
+    """Ask for a concise, textbook-grounded overview for topic-only queries."""
+
+    q = (question or "").strip()
+
+    if not q or "?" in q or len(q.split()) > 8:
+
+        return ""
+
+    command = re.match(
+
+        r"^(what|why|how|when|where|who|which|define|state|explain|"
+
+        r"describe|list|give|find|calculate|solve|compare|differentiate)\b",
+
+        q,
+
+        re.IGNORECASE,
+
+    )
+
+    if command:
+
+        return ""
+
+    return (
+
+        "QUESTION TYPE: Topic-only query. Give a concise overview using ONLY "
+
+        "the supplied textbook text. First state the core definition or meaning "
+
+        "if present. Then include an associated scientist/person, year, formula, "
+
+        "or key fact only if explicitly supported by the supplied text. "
+
+        "Do not answer with only a name or year when the definition is available. "
+
+        "Use 1-3 sentences. Never invent missing facts."
+
+    )
+
+def _definition_line(question):
+
+    """Prioritize the definition for direct definition questions."""
+
+    q = (question or "").strip()
+
+    if re.search(r"\b(what\s+is|what\s+are|define|definition\s+of|meaning\s+of)\b", q, re.IGNORECASE):
+
+        return (
+
+            "QUESTION TYPE: Definition question. Start with the definition or meaning "
+
+            "of the requested term/law if it appears anywhere in the supplied textbook text. "
+
+            "Do not answer only with the scientist, person, date, or historical detail when "
+
+            "the definition is available. Add a related name or year only after the definition, "
+
+            "and only if explicitly supported by the supplied text. Never use outside knowledge."
+
+        )
+
+    return ""
 
 def build_user_prompt(question, chunks):
+
     ctx = "\n\n".join(
+
         f"[{i}]\n{c.get('text', '')}"
+
         for i, c in enumerate(chunks, 1)
+
     )
 
     return f"""TEXTBOOK TEXT:
+
 {ctx}
 
 QUESTION:
+
 {question}
 
 {_language_line(question)}
+
 {_blank_line(question)}
+
 {_detail_line(question)}
 
+{_definition_line(question)}
+
+{_topic_overview_line(question)}
+
 IMPORTANT:
+
 - Answer using ONLY the supplied textbook text.
+
 - If the exact answer is present, give it directly.
+
 - For a definition, unit, formula, name, value or property, give the fact directly.
+
 - Do not add unnecessary explanation to a short factual question.
+
 - If the answer is not supported by the supplied text, do not invent it.
+
 - Do not mention sources, pages, retrieval or the supplied text.
+
 - Do not say "The textbook does not answer this directly."
+
 - Do not say "Here is what it says on this topic."
+
 - Start directly with the answer.
 
 FINAL ANSWER:
+
 """
 
-
 def build_summary_prompt(question, chunks):
+
     ctx = "\n\n".join(
+
         f"[{i}]\n{c.get('text', '')}"
+
         for i, c in enumerate(chunks, 1)
+
     )
 
     return f"""TEXTBOOK TEXT:
+
 {ctx}
 
 QUESTION:
+
 {question}
 
 {_language_line(question)}
@@ -226,8 +455,13 @@ QUESTION:
 Write a short 2 to 4 sentence summary using ONLY the supplied text.
 
 Do not add outside knowledge.
+
 Do not mention sources, pages or retrieval.
+
 Do not say "The textbook does not answer this directly."
+
 Do not say "Here is what it says on this topic."
+
 Start directly with the useful information.
+
 """
