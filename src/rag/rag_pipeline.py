@@ -79,6 +79,44 @@ def _question_overlap(question, text):
     hay = (text or "").lower()
     hits = sum(1 for t in terms if t in hay)
     return hits / len(terms)
+_GENERIC_Q_WORDS = {
+    "difference", "differences", "between", "example", "examples", "each",
+    "explain", "compare", "differentiate", "distinguish", "describe",
+    "one", "two", "give", "following", "about", "transmits", "work", "works",
+    "find", "using", "calculate", "determine", "solve", "check", "whether",
+    "use", "express", "write", "show",
+}
+def _term_in_text(term, hay):
+    """Whole-word match (plural allowed); long words match on their first 6 letters. 'car' must not match 'carbon'."""
+    if len(term) >= 7:
+        return re.search(r"\b" + re.escape(term[:6]), hay) is not None
+    return re.search(r"\b" + re.escape(term) + r"(?:s|es)?\b", hay) is not None
+def _distinct_overlap(question, text):
+    """Share of the question's distinctive topic words found in the text (generic words ignored)."""
+    terms = {t for t in _query_terms(question) if t not in _GENERIC_Q_WORDS}
+    if not terms:
+        return 1.0
+    hay = (text or "").lower()
+    hits = sum(1 for t in terms if _term_in_text(t, hay))
+    return hits / len(terms)
+def _enough_topic_evidence(question, chunks):
+    """
+    Short / vague queries ("Car 4 hours"): every distinctive topic word must appear in at
+    least one of the top chunks, otherwise the retrieved page is unrelated and the
+    pipeline must answer "not found" instead of inventing an answer from it.
+    Longer questions are not gated.
+    """
+    q = str(question or "")
+    if len(q.split()) > 5:
+        return True
+    terms = {t for t in _query_terms(q) if t not in _GENERIC_Q_WORDS}
+    if len(terms) < 2:
+        return True
+    for chunk in (chunks or [])[:3]:
+        hay = str(chunk.get("text") or "").lower()
+        if all(_term_in_text(t, hay) for t in terms):
+            return True
+    return False
 def _keep_exercise_chunk(question, text):
     """Keep exercise chunks when they contain the asked question or strong evidence for it."""
     q = re.sub(r"\s+", " ", str(question or "")).strip().lower()
@@ -393,6 +431,10 @@ def _heat_transfer_query(question):
     if not _looks_heat_transfer_question(question):
         return ""
     return "heat transfer conduction convection radiation examples"
+def _heat_modes(chunk):
+    """How many of the three heat-transfer modes this chunk mentions."""
+    text = str(chunk.get("text") or "").lower()
+    return sum(mode in text for mode in ("conduction", "convection", "radiation"))
 def _filter_heat_transfer_chunks(chunks):
     """Keep only chunks directly discussing one of the three heat-transfer modes."""
     relevant = []
@@ -732,7 +774,7 @@ def _sources_for_question(question, class_no=None, subject=None, book=None, limi
             found = _consecutive_number_chunks(found)
     except Exception:
         return []
-    sources = []
+    scored = []
     seen = set()
     for chunk in found:
         source = _clean_source(chunk)
@@ -740,14 +782,19 @@ def _sources_for_question(question, class_no=None, subject=None, book=None, limi
         source_page = source.get("page")
         if not source_book or source_page in (None, ""):
             continue
+        overlap = _distinct_overlap(question, chunk.get("text"))
+        if overlap < 0.4:
+            continue
         key = (source_book, str(source_page))
         if key in seen:
             continue
         seen.add(key)
-        sources.append({"book": source_book, "page": source_page})
-        if len(sources) >= limit:
-            break
-    return sources
+        scored.append((overlap, {"book": source_book, "page": source_page}))
+    if not scored:
+        return []
+    # Keep only the best-matching pages (those containing the most topic words).
+    best = max(overlap for overlap, _ in scored)
+    return [src for overlap, src in scored if overlap >= best - 0.01][:limit]
 def _looks_fraction_percentage_question(question):
     """Identify numeric fraction-to-percentage conversions for source lookup."""
     q = re.sub(r"\s+", " ", str(question or "")).strip().lower()
@@ -919,7 +966,7 @@ def _prime_factorization_answer(question):
         else:
             powers.append([factor, 1])
     compact_text = " × ".join(
-        f"{factor}^{power}" if power > 1 else str(factor)
+        f"{factor}{str(power).translate(_SUP)}" if power > 1 else str(factor)
         for factor, power in powers
     )
     if factor_text == compact_text:
@@ -960,7 +1007,9 @@ def _hcf_prime_factorization_answer(question):
     left = " × ".join(map(str, fa)) if fa else str(a)
     right = " × ".join(map(str, fb)) if fb else str(b)
     common_text = " × ".join(map(str, common_factors)) if common_factors else "1"
-    return f"{a} = {left}; {b} = {right}. The common prime factors are {common_text}, so HCF({a}, {b}) = {hcf}."
+    # No "digit. " anywhere: the chat UI turns it into a numbered list.
+    return (f"{a} = {left}\n\n{b} = {right}\n\n"
+            f"Common prime factors: {common_text}\n\nHCF({a}, {b}) = {hcf}")
 def _lcm_prime_factorization_answer(question):
     """Solve explicit LCM questions that ask for the prime-factorization method."""
     q = re.sub(r"\s+", " ", str(question or "")).strip().lower()
@@ -998,12 +1047,12 @@ def _lcm_prime_factorization_answer(question):
         return " × ".join(map(str, factors))
     def format_powers(counter):
         return " × ".join(
-            f"{prime}^{exponent}" if exponent > 1 else str(prime)
+            f"{prime}{str(exponent).translate(_SUP)}" if exponent > 1 else str(prime)
             for prime, exponent in sorted(counter.items())
         ) or "1"
-    return (f"{a} = {format_factorization(fa)}; {b} = {format_factorization(fb)}. "
-            f"Taking the highest power of each prime factor gives LCM({a}, {b}) = "
-            f"{format_powers(powers)} = {lcm}.")
+    return (f"{a} = {format_factorization(fa)}\n\n{b} = {format_factorization(fb)}\n\n"
+            f"Highest power of each prime factor: {format_powers(powers)}\n\n"
+            f"LCM({a}, {b}) = {lcm}")
 def _extract_exact_answer_key(question, chunks):
     """Return an answer-key entry only when its exact question appears in a chunk."""
     q = re.sub(r"\s+", " ", str(question or "")).strip()
@@ -1393,10 +1442,10 @@ def _hcf_lcm_verification_answer(question):
         x, y = y, x % y
     hcf = x
     lcm = (a // hcf) * b
-    return (f"HCF({a}, {b}) = {hcf} and LCM({a}, {b}) = {lcm}. "
-            f"Verification: HCF × LCM = {hcf} × {lcm} = {hcf * lcm}; "
-            f"the product of the numbers = {a} × {b} = {a * b}. "
-            f"Both products are equal, so the identity is verified.")
+    return (f"HCF({a}, {b}) = {hcf}\n\nLCM({a}, {b}) = {lcm}\n\n"
+            f"Verification: HCF × LCM = {hcf} × {lcm} = {hcf * lcm}\n\n"
+            f"Product of the numbers = {a} × {b} = {a * b}\n\n"
+            f"Both products are equal, so the identity is verified")
 # ------------------------------------------------------------
 # CHAPTER SUMMARY ("what is the chapter about / summarise")
 # ------------------------------------------------------------
@@ -1431,6 +1480,83 @@ def _summary_chunks(chunks, limit=9):
         idx = sorted({round(i * (len(same) - 1) / (limit - 1)) for i in range(limit)})
         same = [same[i] for i in idx]
     return [dict(p, score=float(base.get("score", 0.0) or 0.0)) for p in same]
+_DEF_CUES = (
+    "for every", "defined as", "is known as", "are known as",
+    "we call", "refers to", "is called",
+)
+def _extractive_definition(question, chunks):
+    """
+    Return the textbook's own defining sentence for 'What is X?' when the top pages
+    contain one (topic phrase + a definition cue). Empty string when none is found,
+    so the normal LLM path is used instead.
+    """
+    try:
+        from src.rag.retriever import _topic_terms
+        terms = _topic_terms(question)
+    except Exception:
+        return ""
+    if not terms:
+        return ""
+    phrase = r"\s+".join(re.escape(t) for t in terms)
+    topic_re = re.compile(rf"\b{phrase}s?\b", re.IGNORECASE)
+    for chunk in (chunks or [])[:3]:
+        text = re.sub(r"\s+", " ", str(chunk.get("text") or ""))
+        if text.lower().count("ans.") >= 2:
+            continue  # answer-key page
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            candidate = sentence.strip()
+            if not (20 <= len(candidate) <= 320):
+                continue
+            lowered = candidate.lower()
+            if topic_re.search(candidate) and any(cue in lowered for cue in _DEF_CUES):
+                return candidate
+    return ""
+_WORD_PROBLEM_Q = re.compile(
+    r"\b(how much|how many|how long|how far|what distance|what is the cost|what is the share|find|calculate)\b",
+    re.IGNORECASE,
+)
+def _looks_word_problem(question):
+    """A numeric word problem: at least two numbers in a sentence of 7+ words."""
+    q = str(question or "")
+    return len(re.findall(r"\d+(?:\.\d+)?", q)) >= 2 and len(q.split()) >= 7
+def _clean_llm_answer(text):
+    """Repair PDF-extraction / LaTeX / list artefacts in an LLM word-problem answer."""
+    t = str(text or "")
+    # LaTeX -> plain text
+    t = re.sub(r"\\\(|\\\)|\\\[|\\\]", "", t)
+    t = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"\1/\2", t)
+    t = t.replace("\\times", "\u00d7").replace("\\cdot", "\u00d7").replace("\\div", "\u00f7")
+    # stacked fraction "x = 240 x 90 / 150" broken over lines -> "x = (240 x 90)/150"
+    t = re.sub(
+        r"(=\s*)(\d+\s*\u00d7\s*\d+)\s*\n+\s*(\d+)\s*(?=\n|$)",
+        lambda m: f"{m.group(1)}({m.group(2)})/{m.group(3)}", t,
+    )
+    # "15 x 2 / 3 = / 10" -> "15 x 2/3 = 10"
+    t = re.sub(
+        r"(\d+)\s*\u00d7\s*(\d+)\s*\n+\s*(\d+)\s*=\s*\n*\s*(\d+)",
+        lambda m: f"{m.group(1)} \u00d7 {m.group(2)}/{m.group(3)} = {m.group(4)}", t,
+    )
+    # sentences that only say the textbook lacks a reason
+    t = re.sub(
+        r"(?:^|(?<=[.!?]\s))The (?:textbook|provided|retrieved)[^.\n]*does not (?:give|contain|mention|state)[^.\n]*\.?",
+        "", t, flags=re.IGNORECASE | re.MULTILINE,
+    )
+    # a period right after a number ("3 : 1.") is turned into a list marker by the chat UI,
+    # so drop it (list numbering at the start of a line is kept)
+    lines = []
+    for line in t.split("\n"):
+        m = re.match(r"^(\s*\d+\.\s+)(.*)$", line)
+        head, rest = (m.group(1), m.group(2)) if m else ("", line)
+        lines.append(head + re.sub(r"(?<=\d)\.(?=\s|$)", "", rest))
+    t = "\n".join(lines)
+    t = re.sub(r"[ \t]+\n", "\n", t).strip()
+    # drop a dangling cut-off last line (answer stopped by the token limit)
+    parts = t.split("\n")
+    if len(parts) > 1:
+        last = parts[-1].strip()
+        if len(last) <= 40 and not re.search(r"[\d)!?.]$", last):
+            t = "\n".join(parts[:-1]).strip()
+    return t
 def _looks_proper_improper_fraction_question(question):
     """Recognise the common proper-vs-improper fraction comparison question."""
     q = re.sub(r"[^a-z0-9]+", " ", str(question or "").lower()).strip()
@@ -1464,8 +1590,13 @@ def _proper_improper_fraction_fast_answer(question, class_no=None, subject=None,
             loose = min(text.count("numerator"), text.count("denominator"))
             # Cite only pages that literally mention the terms; a page that merely
             # has the words numerator/denominator is not a source for this answer.
-            if not literal:
+            # Exact definition pages first; otherwise pages that really discuss
+            # fractions (3+ mentions plus numerator and denominator).
+            fcount = text.count("fraction")
+            related = fcount >= 3 and "numerator" in text and "denominator" in text
+            if not (literal or related):
                 continue
+            loose = fcount
             book_label = name.lower()
             subject_label = str(payload.get("subject") or "").strip().lower()
             is_math = any(t in book_label for t in ("math", "ganita", "ganit", "fraction", "number")) \
@@ -1495,7 +1626,7 @@ def _proper_improper_fraction_fast_answer(question, class_no=None, subject=None,
     )
     return sources, answer
 
-def answer_stream(
+def _answer_stream_uncached(
     question,
     class_no=None,
     subject=None,
@@ -1830,14 +1961,20 @@ def answer_stream(
         # substitute "advection" or attach unrelated retrieval results.
         source_list = []
         seen_heat_sources = set()
+        # Cite pages that discuss at least two of the three modes (when such pages exist),
+        # so a page that merely mentions "radiation" in another context is not cited.
+        _required_modes = 2 if any(_heat_modes(c) >= 2 for c in chunks) else 1
         for chunk in sorted(
             chunks,
             key=lambda c: (
+                _heat_modes(c),
                 int(c.get("_heat_transfer_hits", 0)),
                 float(c.get("score", 0.0) or 0.0),
             ),
             reverse=True,
         ):
+            if _heat_modes(chunk) < _required_modes:
+                continue
             src = _clean_source(chunk)
             name, page = str(src.get("book") or "").strip(), src.get("page")
             if not name or page in (None, ""):
@@ -1907,6 +2044,13 @@ def answer_stream(
             runner_up = max(data["lexical"] + data["hits"] * 0.15 + data["best"] for data in other_books)
             if same_book and best_strength >= runner_up + 0.02:
                 chunks = same_book
+    # Definition questions: trust the top-ranked page. Give the LLM only chunks from
+    # that page's book (max 3), so a definition from another subject cannot leak in.
+    if chunks and intent == "definition" and not fill_blank:
+        _top_book = str(chunks[0].get("book") or "").strip()
+        _same_top = [c for c in chunks if str(c.get("book") or "").strip() == _top_book]
+        if _same_top:
+            chunks = _same_top[:3]
     # Explanations continue on the next page: add neighbouring chunks of the best matches.
     if chunks and intent == "general" and not fill_blank and not _looks_heat_transfer_question(search_question):
         try:
@@ -2033,6 +2177,7 @@ Use ONLY the supplied textbook text. Do not add facts that are not in it. Do not
         ranked_source_chunks = sorted(
             chunks,
             key=lambda chunk: (
+                _distinct_overlap(question, chunk.get("text")),
                 float(chunk.get("score", 0.0) or 0.0),
                 int(chunk.get("_topic_hits", 0) or 0),
                 float(chunk.get("_lexical_bonus", 0.0) or 0.0),
@@ -2057,7 +2202,7 @@ Use ONLY the supplied textbook text. Do not add facts that are not in it. Do not
             if best_book and source_book != best_book:
                 continue
             # Cite only a page that really matches the question's key terms.
-            if _question_overlap(question, chunk.get("text")) < 0.2:
+            if _distinct_overlap(question, chunk.get("text")) < 0.5:
                 continue
             key = (source_book, str(source_page))
             if key in seen_sources:
@@ -2090,6 +2235,34 @@ Use ONLY the supplied textbook text. Do not add facts that are not in it. Do not
     if exact_answer:
         yield "token", exact_answer
         return
+    # Short query whose topic words are not on the retrieved pages: do not answer from an unrelated page.
+    if intent not in {"fill_blank", "true_false", "mcq"} and not _enough_topic_evidence(question, chunks):
+        yield "sources", []
+        yield "token", NOT_FOUND
+        return
+    # Definition questions: if the top page has the textbook's own defining sentence,
+    # answer with that sentence (exact textbook wording, no LLM, instant).
+    if intent == "definition" and not fill_blank:
+        _ext = _extractive_definition(question, chunks)
+        if _ext:
+            yield "token", _ext
+            return
+    # Latency: a huge context makes the LLM prefill slow (explain questions add
+    # neighbouring pages). Keep the best chunks only and cap each chunk's length.
+    # Sources were already sent above, so citations are unaffected.
+    _max_chunks = int(getattr(config, "LLM_MAX_CHUNKS", 5))
+    _max_chars = int(getattr(config, "LLM_CHUNK_CHARS", 1400))
+    chunks = [
+        dict(c, text=str(c.get("text") or "")[:_max_chars])
+        for c in chunks[:_max_chunks]
+    ]
+    if RAG_STAGE_TIMING:
+        print(
+            f"[RAG_TIMING] llm_context_chunks={len(chunks)} "
+            f"context_chars={sum(len(c.get('text') or '') for c in chunks)} "
+            f"pages={[(c.get('book'), c.get('page')) for c in chunks]}",
+            flush=True,
+        )
     # --------------------------------------------------------
     # LLM (strict -> relaxed -> summary fallback)
     # --------------------------------------------------------
@@ -2198,6 +2371,17 @@ Do not output the question.
             yield "token", NOT_FOUND
             return
         user_prompt = build_user_prompt(question, chunks)
+        word_problem = _looks_word_problem(question) and intent not in {"fill_blank", "true_false", "mcq"}
+        if word_problem:
+            user_prompt += """
+IMPORTANT WORD-PROBLEM RULE:
+Solve it step by step using the textbook's method (a proportion a : b :: c : x and cross multiplication, or the factor of change). Write each step on its own line, and write fractions like 2/3 on one line.
+End with ONE complete sentence that states the final answer with its unit.
+Never write that the textbook does not give the reason.
+Do NOT repeat the question; start directly with the first step.
+If the question asks for more than one quantity (for example both acid and water, or each person's share), give EVERY one of them.
+Keep it short: at most 5 lines. Do not use LaTeX; write maths in plain text such as 3/4 \u00d7 4000 = 3000.
+"""
         q_compare = re.sub(r"[^a-z0-9]+", " ", str(question or "").lower()).strip()
         asks_comparison = (
             "difference between" in q_compare
@@ -2259,7 +2443,9 @@ The current input may be an incomplete MCQ stem copied without its options. Use 
         if intent == "definition" and not re.match(r"^\s*(explain|describe|discuss|how)\b", question, re.IGNORECASE):  # [fix:def_rule]
             user_prompt += """
 IMPORTANT DEFINITION RULE:
-Give ONE complete, self-contained sentence that names the term being defined.
+Give ONE or TWO complete, self-contained sentences that name the term being defined.
+Use ONLY the wording and facts of the retrieved textbook text. Do NOT use outside knowledge and do NOT write a dictionary definition.
+If the textbook text explains the term with a "for every ..." statement or an example (for example "60 : 40"), use that explanation and that example.
 Never start with "This", "These", "It" or "They"; start with the term itself, for example "The digital root of a number is the single-digit number obtained by repeatedly adding its digits."
 Write "X is the ..." or "X is a ..."; never write "X is called the ...".
 """
@@ -2294,6 +2480,7 @@ If the retrieved context contains a worked solution or an "Ans." entry for the s
             deterministic_fact
             or mcq_stem
             or asks_comparison
+            or word_problem
             or bool(re.match(r"^\s*which\s+of\s+the\s+following\b", question, re.IGNORECASE))
         )
         for system_prompt in (SYSTEM_PROMPT, RELAXED_SYSTEM_PROMPT):
@@ -2316,6 +2503,8 @@ If the retrieved context contains a worked solution or an "Ans." entry for the s
                     answer = "".join(fact_parts)
                     if asks_comparison:
                         answer = _remove_incomplete_markdown_table_rows(answer)
+                    if word_problem:
+                        answer = _clean_llm_answer(answer)
                     answer = _format_fact_answer(answer, intent, question)
                     if answer:
                         yield "token", answer
@@ -2353,3 +2542,34 @@ If the retrieved context contains a worked solution or an "Ans." entry for the s
         return
     yield "sources", []
     yield "token", NOT_FOUND
+
+
+# ------------------------------------------------------------
+# ANSWER CACHE (a repeated question is answered instantly)
+# ------------------------------------------------------------
+_ANSWER_CACHE = {}
+_ANSWER_CACHE_MAX = int(getattr(config, "ANSWER_CACHE_MAX", 200))
+_NO_CACHE_TOKENS = {NOT_FOUND, "Unable to generate an answer right now."}
+
+
+def answer_stream(question, class_no=None, subject=None, book=None):
+    """Cached wrapper: same question + filters -> replay the stored events."""
+    norm = re.sub(r"\s+", " ", str(question or "")).strip(" \"'\u201c\u201d\u2018\u2019").lower()
+    key = (norm, str(class_no), str(subject), str(book))
+    cached = _ANSWER_CACHE.get(key)
+    if cached is not None:
+        if RAG_STAGE_TIMING:
+            print("[RAG_TIMING] answer_cache_hit", flush=True)
+        for event in cached:
+            yield event
+        return
+    events = []
+    for event in _answer_stream_uncached(question, class_no, subject, book):
+        events.append(event)
+        yield event
+    has_answer = any(kind == "token" for kind, _ in events)
+    failed = any(kind == "token" and value in _NO_CACHE_TOKENS for kind, value in events)
+    if norm and has_answer and not failed:
+        if len(_ANSWER_CACHE) >= _ANSWER_CACHE_MAX:
+            _ANSWER_CACHE.pop(next(iter(_ANSWER_CACHE)))
+        _ANSWER_CACHE[key] = events

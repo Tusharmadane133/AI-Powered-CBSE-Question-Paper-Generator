@@ -410,6 +410,15 @@ def _topic_phrase_pattern(question):
         return None
     connector = r"(?:\s+(?:of|the|a|an|for|in|on|to|and|by|with))?\s+"
     return rf"\b{connector.join(re.escape(term) for term in terms)}\b"
+def _heading_bonus(normalized, question):
+    """A page with a numbered section heading on the asked topic (e.g. '7.2 Ratios') is the definition page."""
+    terms = _topic_terms(question)
+    if not terms:
+        return 0.0
+    core = r"\s+".join(re.escape(t) for t in terms)
+    if re.search(rf"(?:^|\s)\d{{1,2}}\.\d{{1,2}}\s+(?:the\s+|a\s+|an\s+)?{core}s?\b", normalized):
+        return 10.0
+    return 0.0
 def _fact_lookup(question, class_no, subject, book=None, n=8):
     intent = _question_intent(question)
     if intent not in {"definition", "unit", "formula"}:
@@ -430,7 +439,9 @@ def _fact_lookup(question, class_no, subject, book=None, n=8):
         matches = list(re.finditer(pattern, normalized, re.IGNORECASE))
         if not matches:
             continue
-        score = 3.0
+        score = 3.0 + min(len(matches), 12) * 0.7
+        if intent == "definition":
+            score += _heading_bonus(normalized, question)
         if intent == "definition":
             markers = (
                 rf"{pattern}\s+(?:is|are|refers\s+to|means|can\s+be\s+defined\s+as|states?\s+that|is\s+the\s+law\s+that)",
@@ -478,6 +489,8 @@ def _fact_lookup(question, class_no, subject, book=None, n=8):
             if not marker_hits:
                 continue
             score += 2.0 + min(1.5, 0.5 * marker_hits)
+        if normalized.count("ans.") >= 2:
+            score -= 6.0  # answer-key pages are not definitions
         score -= min(len(normalized) / 5000.0, 0.8)
         candidates.append((score, payload))
     candidates.sort(key=lambda item: item[0], reverse=True)
@@ -501,6 +514,8 @@ def _topic_search(question, class_no, subject, book=None, n=8):
         if not matches:
             continue
         score = 1.0 + min(len(matches), 3) * 0.8
+        if intent == "definition":
+            score += _heading_bonus(normalized, question)
         for match in matches:
             window = normalized[max(0, match.start()-120):match.end()+300]
             if intent == "unit" and re.search(r"\b(si\s+unit|unit|measured\s+in|expressed\s+in)\b", window, re.IGNORECASE):
@@ -513,6 +528,8 @@ def _topic_search(question, class_no, subject, book=None, n=8):
             evidence = r"matter\s+can\s+neither\s+be\s+created\s+nor\s+destroyed|total\s+mass\s+(?:remains\s+the\s+same|of.{0,100}?(?:equal|same))|known\s+as\s+the\s+law\s+of\s+conservation\s+of\s+mass"
             local_evidence = any(re.search(evidence, normalized[max(0, match.start()-180):min(len(normalized), match.end()+500)], re.IGNORECASE) for match in matches)
             score += 15.0 if local_evidence else -2.0
+        if normalized.count("ans.") >= 2:
+            score -= 6.0  # answer-key pages are not definitions
         score -= min(len(normalized) / 6000.0, 0.5)
         candidates.append((score, payload))
     candidates.sort(key=lambda item: item[0], reverse=True)
